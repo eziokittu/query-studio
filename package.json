@@ -18,7 +18,13 @@
     "desktop:build": "npm run build && npm run dist --workspace @query-studio/desktop",
     "mobile:sync": "npm run build && npm run sync --workspace @query-studio/mobile",
     "typecheck": "tsc -b packages/core apps/web --pretty",
-    "clean": "node -e \"const{rmSync}=require('fs');['packages/core/dist','apps/web/dist','apps/desktop/dist','apps/desktop/release'].forEach(p=>rmSync(p,{recursive:true,force:true}))\""
+    "clean": "node -e \"const{rmSync}=require('fs');['packages/core/dist','apps/web/dist','apps/desktop/dist','apps/desktop/release'].forEach(p=>rmSync(p,{recursive:true,force:true}))\"",
+    "test": "node packages/core/test/workbench.test.mjs",
+    "test:e2e": "node test/e2e-web.mjs",
+    "test:desktop": "npm run test --workspace @query-studio/desktop",
+    "test:desktop:smoke": "npm run test:smoke --workspace @query-studio/desktop",
+    "test:packaged": "npm run test:packaged --workspace @query-studio/desktop",
+    "test:all": "npm test && npm run test:desktop && npm run test:e2e && npm run test:desktop:smoke"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

@@ -12,6 +12,8 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from "electron";
 import { existsSync, statSync } from "node:fs";
 import { join, basename, extname } from "node:path";
+import { cpus, totalmem } from "node:os";
+import { normaliseRows } from "./values.js";
 import { pathToFileURL } from "node:url";
 
 // Loaded lazily: importing the native addon costs ~200ms and a user who opens the
@@ -52,6 +54,26 @@ const activeStreams = new Map<string, { cancelled: boolean }>();
 
 // ── DuckDB ───────────────────────────────────────────────────────────────────
 
+/**
+ * DuckDB's memory ceiling, as an absolute size.
+ *
+ * The obvious spelling is `max_memory: "80%"`, which is what DuckDB's own docs use
+ * for the CLI. It does not work here: DuckDB 1.4 accepts only KB/MB/GB/TB and their
+ * KiB/MiB/GiB/TiB forms, and rejects `%` outright — at config time as an opaque
+ * "Failed to set config", and via `SET` as "Unknown unit for memory: '%'". Since
+ * this runs during `getConnection()`, that threw before the first query and took
+ * the whole workbench with it.
+ *
+ * So the percentage is computed here instead. The floor matters as much as the
+ * ratio: a machine reporting very little RAM should still get enough headroom for
+ * DuckDB to spill rather than fail outright, and spilling is what `temp_directory`
+ * above is for.
+ */
+function memoryBudget(): string {
+  const mib = Math.floor((totalmem() * 0.8) / (1024 * 1024));
+  return `${Math.max(1024, mib)}MiB`;
+}
+
 async function getConnection(): Promise<Connection> {
   if (connection) return connection;
 
@@ -59,8 +81,8 @@ async function getConnection(): Promise<Connection> {
   const instance = await duckdb.DuckDBInstance.create(":memory:", {
     // Let DuckDB use the machine. These are the settings that make the desktop
     // build meaningfully faster than the browser one on a large scan.
-    threads: String(Math.max(2, Math.min(16, require("node:os").cpus().length))),
-    max_memory: "80%",
+    threads: String(Math.max(2, Math.min(16, cpus().length))),
+    max_memory: memoryBudget(),
     // Spilling is what lets a 40 GB aggregate finish on a 16 GB laptop instead of
     // dying. Without it, "no size limit" would be a marketing claim rather than true.
     temp_directory: join(app.getPath("temp"), "query-studio-spill"),
@@ -111,25 +133,6 @@ function scanExpressionFor(path: string): { sql: string; format: string } {
         format: "csv",
       };
   }
-}
-
-/** BigInt and friends are not structured-cloneable across IPC. Normalise first. */
-function normaliseRows(rows: unknown[][]): unknown[][] {
-  return rows.map((row) =>
-    row.map((value) => {
-      if (typeof value === "bigint") return value.toString();
-      if (value instanceof Date) return value.toISOString();
-      if (value instanceof Uint8Array) return `0x${Buffer.from(value).toString("hex")}`;
-      if (value != null && typeof value === "object") {
-        try {
-          return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
-        } catch {
-          return String(value);
-        }
-      }
-      return value;
-    }),
-  );
 }
 
 function columnsFrom(reader: { columnNames(): string[]; columnTypes(): { toString(): string }[] }) {
@@ -295,6 +298,42 @@ ipcMain.handle("qs:export", async (_event, sql: string, destination: string, for
 
 // ── Window ───────────────────────────────────────────────────────────────────
 
+/**
+ * Where the built web app lives.
+ *
+ * Packaged, electron-builder copies apps/web/dist to resources/app — that is the
+ * `extraResources` entry in package.json. Unpackaged (`npm start`, which is how
+ * anyone smoke-tests a production build before spending twenty minutes on an
+ * installer), `process.resourcesPath` points at Electron's own resources
+ * directory, where there is no `app/index.html` and never will be. The result was
+ * a blank window with `ERR_FILE_NOT_FOUND` in a devtools console that is closed
+ * outside dev mode.
+ *
+ * So the packaged location is tried first and the repo layout is the fallback.
+ */
+function rendererEntry(): string {
+  const packaged = join(process.resourcesPath, "app", "index.html");
+  if (existsSync(packaged)) return packaged;
+
+  const fromRepo = join(__dirname, "..", "..", "web", "dist", "index.html");
+  if (existsSync(fromRepo)) return fromRepo;
+
+  // Neither exists: say which two places were checked rather than showing a blank
+  // window. `npm run build` at the repo root is what fills the second one in.
+  dialog.showErrorBox(
+    "Query Studio could not start",
+    `The app UI is missing. Looked in:
+
+${packaged}
+${fromRepo}
+
+` +
+      "Run `npm run build` at the repo root to build it.",
+  );
+  app.quit();
+  return packaged;
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -318,7 +357,7 @@ function createWindow(): void {
     void mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
-    void mainWindow.loadFile(join(process.resourcesPath, "app", "index.html"));
+    void mainWindow.loadFile(rendererEntry());
   }
 
   // Any http(s) link opens in the real browser, never inside the app shell.

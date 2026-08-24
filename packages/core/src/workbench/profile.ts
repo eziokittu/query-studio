@@ -78,10 +78,10 @@ export async function profileTable(engine: QueryEngine, table: TableHandle): Pro
     const nullPct = num(row[index.null_percentage]) ?? 0;
     const approxDistinct = num(row[index.approx_unique]) ?? 0;
 
-    // SUMMARIZE reports null_percentage as 0–100, occasionally as a formatted
-    // string depending on version. Normalising to a fraction here keeps the flag
-    // thresholds below readable.
-    const nullFraction = clamp01(nullPct > 1 ? nullPct / 100 : nullPct);
+    // SUMMARIZE reports null_percentage on a 0–100 scale, always. It is tempting to
+    // "handle both" by only dividing when the value exceeds 1, but that reads a
+    // genuine 1% of nulls as 100% and flags a perfectly good column as all-null.
+    const nullFraction = clamp01(nullPct / 100);
     const nullCount = Math.round(nullFraction * rowCount);
 
     const profile: ColumnProfile = {
@@ -101,6 +101,8 @@ export async function profileTable(engine: QueryEngine, table: TableHandle): Pro
     profile.flags = deriveFlags(profile, rowCount);
     return profile;
   });
+
+  await confirmUniqueness(engine, table, columns, rowCount);
 
   return {
     tableId: table.id,
@@ -132,14 +134,84 @@ function deriveFlags(profile: ColumnProfile, rowCount: number): ColumnFlag[] {
   const nonNull = rowCount - profile.nullCount;
   if (profile.approxDistinct <= 1) {
     flags.push("constant");
-  } else if (nonNull > 0 && profile.approxDistinct >= nonNull * 0.99) {
-    // approx_unique is an estimate, so "unique" needs tolerance rather than equality.
+  } else if (nonNull > 0 && profile.approxDistinct >= nonNull * UNIQUE_CANDIDATE_RATIO) {
+    // Only a *candidate*. `approx_unique` is HyperLogLog, and its error on real data
+    // runs to several percent in both directions — measured on a 50k-row file it
+    // reported 45,031 for a column that was exactly unique and 49,739 for one that
+    // was not. Confirmed exactly by `confirmUniqueness` before the badge survives.
     flags.push("unique");
   } else if (profile.approxDistinct <= Math.max(50, rowCount * 0.01)) {
     flags.push("low-cardinality");
   }
 
   return flags;
+}
+
+/**
+ * How close to the non-null count an estimate has to be to be worth checking.
+ *
+ * Loose on purpose: this only decides which columns get an exact count, and missing
+ * a real key because HyperLogLog under-counted by 12% is the failure that matters.
+ */
+const UNIQUE_CANDIDATE_RATIO = 0.8;
+
+/**
+ * Replace the estimated `unique` flags with measured ones.
+ *
+ * The badge means "candidate key, safe to join on", and people act on it — so it has
+ * to be true rather than probably true. One extra scan buys that, and it only runs
+ * when SUMMARIZE turned up something that might be a key: a file of low-cardinality
+ * columns adds no query at all.
+ *
+ * Everything is counted in a single statement, so the cost is one pass over the file
+ * regardless of how many candidates there are.
+ */
+async function confirmUniqueness(
+  engine: QueryEngine,
+  table: TableHandle,
+  columns: ColumnProfile[],
+  rowCount: number,
+): Promise<void> {
+  const candidates = columns.filter((c) => c.flags.includes("unique"));
+  if (candidates.length === 0 || rowCount === 0) return;
+
+  const projections = candidates.flatMap((c, i) => [
+    `count(${quoteIdent(c.name)}) AS n_${i}`,
+    `count(DISTINCT ${quoteIdent(c.name)}) AS d_${i}`,
+  ]);
+
+  let row: unknown[] | undefined;
+  try {
+    const result = await engine.query(
+      `SELECT ${projections.join(", ")} FROM ${quoteIdent(table.name)}`,
+      { limit: null },
+    );
+    row = result.rows[0];
+  } catch {
+    // A column type DuckDB cannot count DISTINCT on (nested LIST/STRUCT). Dropping
+    // the unverified badges is the honest outcome — better no claim than a wrong one.
+    for (const c of candidates) c.flags = c.flags.filter((f) => f !== "unique");
+    return;
+  }
+
+  candidates.forEach((column, i) => {
+    const nonNull = num(row?.[i * 2]);
+    const distinct = num(row?.[i * 2 + 1]);
+
+    // A column of all one value is constant, not a key, so require more than one.
+    const isUnique = nonNull != null && distinct != null && distinct === nonNull && distinct > 1;
+
+    if (isUnique) {
+      column.approxDistinct = distinct;
+    } else {
+      column.flags = column.flags.filter((f) => f !== "unique");
+      if (distinct != null) {
+        column.approxDistinct = distinct;
+        if (distinct <= 1) column.flags.push("constant");
+        else if (distinct <= Math.max(50, rowCount * 0.01)) column.flags.push("low-cardinality");
+      }
+    }
+  });
 }
 
 /**

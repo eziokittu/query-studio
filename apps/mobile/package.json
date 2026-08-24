@@ -4,14 +4,15 @@
   "private": true,
   "description": "Query Studio for Android and iOS. Same engine, same UI, wrapped natively.",
   "scripts": {
+    "icons": "node scripts/make-icons.mjs",
     "sync": "cap sync",
-    "add:android": "cap add android",
-    "add:ios": "cap add ios",
+    "add:android": "cap add android && npm run icons",
+    "add:ios": "cap add ios && npm run icons",
     "open:android": "cap open android",
     "open:ios": "cap open ios",
     "run:android": "cap run android",
     "run:ios": "cap run ios",
-    "build:android": "cap sync android && cd android && gradlew.bat assembleRelease",
+    "build:android": "cap sync android && node scripts/gradle.mjs assembleRelease",
     "build:ios": "cap sync ios && cd ios/App && xcodebuild -workspace App.xcworkspace -scheme App -configuration Release"
   },
   "dependencies": {

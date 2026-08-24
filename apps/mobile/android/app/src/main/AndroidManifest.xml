@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Two changes from the stock Capacitor template, both load-bearing:
+
+        android:largeHeap - the whole product is "open a file too big for the other
+        apps", and the default per-process heap is nowhere near enough for
+        DuckDB-WASM. Without it the WebView is killed by the OS partway through a
+        scan, which reaches the user as the app vanishing rather than as an error it
+        could explain. largeHeap is a request and not a guarantee - the OS grants
+        what it has - so apps/web/src/platform.ts still caps the advertised ceiling
+        and refuses an oversized file up front rather than starting a scan that
+        cannot finish.
+
+        no INTERNET permission - see the note above <uses-permission> below.
+    -->
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:largeHeap="true"
+        android:usesCleartextTraffic="false"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+    </application>
+
+    <!-- Permissions -->
+
+    <!--
+      The stock Capacitor template declares android.permission.INTERNET. It is
+      deliberately not declared here.
+
+      The app never makes a network request. Capacitor does not need the permission
+      to serve the UI either: every request from the WebView goes through
+      `WebViewLocalServer.shouldInterceptRequest` and is answered out of the APK's
+      own assets, which is also why DuckDB's .wasm and the json extension are copied
+      into assets/public at build time rather than fetched from a CDN. None of the
+      five bundled plugins (app, filesystem, haptics, share, status-bar) declare it
+      either - haptics asks only for VIBRATE, which the manifest merger adds.
+
+      Leaving it out turns "nothing leaves your device" from a promise in the
+      marketing copy into something the OS enforces and the Play Store listing
+      shows. If a future feature genuinely needs the network, add it back here
+      deliberately and change that claim on the download page at the same time.
+    -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+</manifest>

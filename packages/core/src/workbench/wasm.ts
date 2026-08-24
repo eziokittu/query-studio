@@ -31,6 +31,7 @@ import {
   buildDescribeStatement,
   buildViewStatement,
   quoteIdent,
+  quoteLiteral,
   tableNameFor,
 } from "./sql.js";
 
@@ -45,6 +46,16 @@ export interface WasmBundle {
   mainModule: string;
   mainWorker: string;
   pthreadWorker?: string | null;
+  /**
+   * Root of a self-hosted DuckDB extension repository, if there is one.
+   *
+   * DuckDB ships a small core and fetches the rest on demand — `read_json` needs
+   * the `json` extension, which by default is pulled from extensions.duckdb.org the
+   * first time someone opens a JSON file. Pointing this at our own copy is what
+   * keeps the offline builds offline and stops a third-party request appearing
+   * mid-session in a tool whose whole claim is that nothing leaves the device.
+   */
+  extensionRepository?: string | null;
 }
 
 export interface WasmEngineOptions {
@@ -71,8 +82,19 @@ export function selfHosted(baseUrl: string): WasmBundle {
     mainModule: `${base}/duckdb-eh.wasm`,
     mainWorker: `${base}/duckdb-browser-eh.worker.js`,
     pthreadWorker: null,
+    // Populated by the copy-duckdb build script, in the layout DuckDB expects.
+    extensionRepository: `${base}/extensions`,
   };
 }
+
+/**
+ * Extensions pre-loaded at boot rather than on first use.
+ *
+ * Only `json` for now. Loading it eagerly costs ~800 KB once and turns "the first
+ * JSON file you open needs a network round-trip" into "it just works", which is the
+ * difference between the offline claim being true and being nearly true.
+ */
+const PRELOAD_EXTENSIONS = ["json"];
 
 interface DuckDbModule {
   AsyncDuckDB: new (logger: unknown, worker: Worker) => AsyncDuckDb;
@@ -100,7 +122,8 @@ interface DuckDbConnection {
 
 interface ArrowField {
   name: string;
-  type: { toString(): string };
+  /** `scale` is present on DECIMAL fields and is needed to place the point. */
+  type: { toString(): string; scale?: number };
   nullable: boolean;
 }
 
@@ -145,22 +168,48 @@ export class WasmEngine implements QueryEngine {
     const duckdb = (await import("@duckdb/duckdb-wasm")) as unknown as DuckDbModule;
     this.duckdb = duckdb;
 
-    const bundle = this.options.bundle ?? (await duckdb.selectBundle(duckdb.getJsDelivrBundles()));
+    const selected = this.options.bundle ?? (await duckdb.selectBundle(duckdb.getJsDelivrBundles()));
+    const bundle = absolutiseBundle(selected);
 
-    // A same-origin worker script is required under most CSPs, and the blob shim is
-    // the standard way to get one when the asset is served from elsewhere.
-    const workerUrl = URL.createObjectURL(
-      new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" }),
-    );
-    const worker = new Worker(workerUrl);
+    const { worker, revoke } = spawnWorker(bundle.mainWorker);
     const logger = this.options.onLog ? new duckdb.ConsoleLogger() : new duckdb.VoidLogger();
 
     const db = new duckdb.AsyncDuckDB(logger, worker);
     await db.instantiate(bundle.mainModule, bundle.pthreadWorker ?? null);
-    URL.revokeObjectURL(workerUrl);
+    revoke();
 
     this.db = db;
     this.conn = await db.connect();
+
+    await this.loadExtensions(bundle.extensionRepository ?? null);
+  }
+
+  /**
+   * Point DuckDB at our own extension copies and load them up front.
+   *
+   * Deliberately non-fatal. A missing extension costs JSON support; a throw here
+   * would cost the whole workbench, including the CSV and Parquet paths that need
+   * no extension at all. The failure is reported through `onLog` so it is visible
+   * in development without breaking a user's session over it.
+   */
+  private async loadExtensions(repository: string | null): Promise<void> {
+    if (!repository) return;
+
+    try {
+      await this.exec(`SET custom_extension_repository=${quoteLiteral(repository)}`);
+    } catch (e) {
+      this.options.onLog?.(`Could not set the extension repository: ${String(e)}`);
+      return;
+    }
+
+    for (const name of PRELOAD_EXTENSIONS) {
+      try {
+        await this.exec(`INSTALL ${name}`);
+        await this.exec(`LOAD ${name}`);
+      } catch (e) {
+        this.options.onLog?.(`Could not load the ${name} extension: ${String(e)}`);
+      }
+    }
   }
 
   async registerFile(source: SourceFile): Promise<TableHandle> {
@@ -306,6 +355,66 @@ export class WasmEngine implements QueryEngine {
   }
 }
 
+/**
+ * Make every URL in a bundle absolute.
+ *
+ * `selfHosted("./duckdb")` is the natural thing to write, and every app here does
+ * it — `base: "./"` in the Vite config is what lets the same build run from a
+ * `file://` URL in Electron and from a Capacitor WebView. But a relative URL has to
+ * be resolved against *something*, and the worker below has no useful base of its
+ * own: a blob: worker's base is the blob URL, so `./duckdb/x.js` inside it resolves
+ * to nothing and `importScripts` throws `The URL … is invalid`.
+ *
+ * Resolving here, against the document that is actually running, means callers can
+ * keep passing relative bases and the worker still gets a URL it can fetch.
+ */
+function absolutiseBundle(bundle: WasmBundle): WasmBundle {
+  const base = typeof location !== "undefined" ? location.href : undefined;
+  const resolve = (url: string) => {
+    try {
+      return new URL(url, base).href;
+    } catch {
+      // Already absolute, or no document to resolve against. Leave it alone.
+      return url;
+    }
+  };
+
+  return {
+    mainModule: resolve(bundle.mainModule),
+    mainWorker: resolve(bundle.mainWorker),
+    pthreadWorker: bundle.pthreadWorker ? resolve(bundle.pthreadWorker) : bundle.pthreadWorker,
+    // DuckDB appends `/{version}/{platform}/…` to this and fetches it from inside
+    // the worker, so it has the same no-relative-base problem as the worker script.
+    extensionRepository: bundle.extensionRepository
+      ? resolve(bundle.extensionRepository)
+      : bundle.extensionRepository,
+  };
+}
+
+/**
+ * Start the DuckDB worker from a URL that is now guaranteed absolute.
+ *
+ * A same-origin script can be a Worker directly. The blob shim is only needed to
+ * load a *cross-origin* script (the jsDelivr default), where `new Worker(url)` is
+ * blocked but `importScripts` from a same-origin blob is not — and it is worth
+ * avoiding when we can, because a blob: worker is exactly what a strict CSP without
+ * `worker-src blob:` refuses.
+ */
+function spawnWorker(workerUrl: string): { worker: Worker; revoke: () => void } {
+  const sameOrigin =
+    typeof location !== "undefined" &&
+    (workerUrl.startsWith(`${location.origin}/`) || workerUrl.startsWith("file:"));
+
+  if (sameOrigin) {
+    return { worker: new Worker(workerUrl), revoke: () => {} };
+  }
+
+  const blobUrl = URL.createObjectURL(
+    new Blob([`importScripts(${JSON.stringify(workerUrl)});`], { type: "text/javascript" }),
+  );
+  return { worker: new Worker(blobUrl), revoke: () => URL.revokeObjectURL(blobUrl) };
+}
+
 /** Arrow schema → our ColumnInfo. */
 function arrowColumns(table: ArrowTable): ColumnInfo[] {
   return table.schema.fields.map((f) => ({
@@ -323,12 +432,56 @@ function arrowColumns(table: ArrowTable): ColumnInfo[] {
  * Number would silently lose precision above 2^53, and these are frequently ids).
  */
 function arrowRows(table: ArrowTable, columns: ColumnInfo[]): unknown[][] {
-  return table.toArray().map((record) => columns.map((c) => normalise(record[c.name])));
+  // DECIMAL values arrive as an unscaled integer; the scale that turns it back into
+  // a number lives on the field, not the value, so it has to be carried in here.
+  const scales = table.schema.fields.map((f) => f.type.scale);
+  return table
+    .toArray()
+    .map((record) => columns.map((c, i) => normalise(record[c.name], scales[i])));
 }
 
-function normalise(value: unknown): unknown {
+/**
+ * Arrow's arbitrary-precision numbers, which are not what they look like.
+ *
+ * A DECIMAL comes back as a `Uint32Array` subclass carrying the *unscaled* integer:
+ * `10.00` is the array holding 1000. It is not an `instanceof` anything useful, its
+ * `toString()` drops the scale, and — the part that actually bites — its `toJSON()`
+ * returns a string that already contains quotes, so `JSON.stringify` on it yields
+ * `"\"1000\""`. Falling through to the generic object branch below therefore turns
+ * every price column in a CSV into a number 100× too big, wrapped in quotes.
+ */
+const ARROW_BIG_NUM = Symbol.for("isArrowBigNum");
+
+function isArrowBigNum(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<symbol, unknown>)[ARROW_BIG_NUM] === true
+  );
+}
+
+/**
+ * Put the decimal point back, as a string.
+ *
+ * Deliberately not via `Number` — DECIMAL(38,9) exists precisely because the value
+ * does not fit a float, and a tool people use to check financial exports must not be
+ * the thing that rounds it.
+ */
+function formatDecimal(unscaled: string, scale: number | undefined): string {
+  if (!scale || scale <= 0 || !Number.isFinite(scale)) return unscaled;
+
+  const negative = unscaled.startsWith("-");
+  const digits = (negative ? unscaled.slice(1) : unscaled).padStart(scale + 1, "0");
+  const whole = digits.slice(0, digits.length - scale);
+  const fraction = digits.slice(digits.length - scale);
+
+  return `${negative ? "-" : ""}${whole}.${fraction}`;
+}
+
+function normalise(value: unknown, scale?: number): unknown {
   if (typeof value === "bigint") return value.toString();
   if (value instanceof Date) return value.toISOString();
+  if (isArrowBigNum(value)) return formatDecimal(String(value), scale);
   if (value instanceof Uint8Array) return `0x${Buffer_toHex(value)}`;
   if (value != null && typeof value === "object") {
     // Nested JSON / LIST / STRUCT columns. Render rather than showing [object Object].
