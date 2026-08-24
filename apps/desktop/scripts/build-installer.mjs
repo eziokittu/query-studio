@@ -111,13 +111,23 @@ for (const name of sources) {
 
 // ── build ────────────────────────────────────────────────────────────────────
 
+// `electronDist` points at the *host's* unpacked Electron. Handing that to a
+// cross-platform build would package Windows binaries inside a Linux AppImage, so it
+// is passed only when the target is the machine we are on. For any other target,
+// `electronVersion` alone is enough — electron-builder downloads the right dist.
+const crossBuilding = platform !== process.platform;
+
 const flags = [
   ...args,
   `--config.electronVersion=${electronVersion}`,
-  `--config.electronDist=${electronDist}`,
+  ...(crossBuilding ? [] : [`--config.electronDist=${electronDist}`]),
   // See note 2 above. Without this, electron-builder deletes its own binary.
   "--config.npmRebuild=false",
 ];
+
+if (crossBuilding) {
+  console.log(`[dist] Cross-building for ${platform} from ${process.platform} — downloading its Electron.`);
+}
 
 console.log(`[dist] electron-builder ${flags.join(" ")}`);
 

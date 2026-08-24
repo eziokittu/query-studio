@@ -37,6 +37,7 @@
     "appId": "com.glitchbong.querystudio",
     "productName": "Query Studio",
     "copyright": "Copyright \u00a9 2026 Bodhisatta Bhattacharjee",
+    "artifactName": "QueryStudio-${version}-${arch}.${ext}",
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -79,7 +80,8 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "shortcutName": "Query Studio"
+      "shortcutName": "Query Studio",
+      "artifactName": "QueryStudio-${version}-${arch}.${ext}"
     },
     "mac": {
       "target": [
@@ -151,6 +153,9 @@
         "name": "NDJSON file",
         "role": "Viewer"
       }
-    ]
+    ],
+    "portable": {
+      "artifactName": "QueryStudio-${version}-portable.${ext}"
+    }
   }
 }
