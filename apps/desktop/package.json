@@ -1,0 +1,86 @@
+{
+  "name": "@query-studio/desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Query Studio for Windows, macOS and Linux. Native DuckDB, no file size limit, fully offline.",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build:main": "esbuild electron/main.ts electron/preload.ts --bundle --platform=node --format=cjs --outdir=dist --out-extension:.js=.cjs --external:electron --external:@duckdb/node-api --target=node20",
+    "dev": "npm run build:main && electron dist/main.cjs --dev",
+    "prestart": "npm run build:main",
+    "start": "electron dist/main.cjs",
+    "dist": "npm run build:main && electron-builder",
+    "dist:win": "npm run build:main && electron-builder --win",
+    "dist:mac": "npm run build:main && electron-builder --mac",
+    "dist:linux": "npm run build:main && electron-builder --linux"
+  },
+  "dependencies": {
+    "@duckdb/node-api": "^1.4.0-alpha.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.3"
+  },
+  "build": {
+    "appId": "com.glitchbong.querystudio",
+    "productName": "Query Studio",
+    "copyright": "Copyright © 2026 Bodhisatta Bhattacharjee",
+    "directories": { "output": "release", "buildResources": "build" },
+    "files": [
+      "dist/**/*",
+      "!node_modules/**/*",
+      "node_modules/@duckdb/**/*"
+    ],
+    "extraResources": [
+      { "from": "../web/dist", "to": "app", "filter": ["**/*"] }
+    ],
+    "asarUnpack": ["node_modules/@duckdb/**/*"],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64", "arm64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "Query Studio"
+    },
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["x64", "arm64"] }],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.developer-tools",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "linux": {
+      "target": [
+        { "target": "AppImage", "arch": ["x64", "arm64"] },
+        { "target": "deb", "arch": ["x64"] },
+        { "target": "rpm", "arch": ["x64"] }
+      ],
+      "icon": "build/icon.png",
+      "category": "Development",
+      "maintainer": "Bodhisatta Bhattacharjee",
+      "desktop": {
+        "entry": {
+          "Name": "Query Studio",
+          "Comment": "Query CSV, JSON, Parquet and log files with SQL",
+          "Categories": "Development;Database;"
+        }
+      }
+    },
+    "fileAssociations": [
+      { "ext": "csv", "name": "CSV file", "role": "Viewer" },
+      { "ext": "tsv", "name": "TSV file", "role": "Viewer" },
+      { "ext": "parquet", "name": "Parquet file", "role": "Viewer" },
+      { "ext": "ndjson", "name": "NDJSON file", "role": "Viewer" }
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "query-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SQL translator, analyzer and large-file workbench. Runs in the browser, on the desktop, and on mobile. No account, no upload, no server.",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/web",
+    "apps/desktop",
+    "apps/mobile"
+  ],
+  "scripts": {
+    "build:core": "npm run build --workspace @query-studio/core",
+    "dev": "npm run dev --workspace @query-studio/web",
+    "build": "npm run build:core && npm run build --workspace @query-studio/web",
+    "desktop": "npm run dev --workspace @query-studio/desktop",
+    "desktop:build": "npm run build && npm run dist --workspace @query-studio/desktop",
+    "mobile:sync": "npm run build && npm run sync --workspace @query-studio/mobile",
+    "typecheck": "tsc -b packages/core apps/web --pretty",
+    "clean": "node -e \"const{rmSync}=require('fs');['packages/core/dist','apps/web/dist','apps/desktop/dist','apps/desktop/release'].forEach(p=>rmSync(p,{recursive:true,force:true}))\""
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

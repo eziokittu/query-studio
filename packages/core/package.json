@@ -1,0 +1,36 @@
+{
+  "name": "@query-studio/core",
+  "version": "1.0.0",
+  "description": "Deterministic SQL engines (translate, explain, analyze, optimize, format, validate, diagram) plus the large-file query workbench. Zero network calls.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./engines": { "types": "./dist/engines/index.d.ts", "default": "./dist/engines/index.js" },
+    "./workbench": { "types": "./dist/workbench/index.d.ts", "default": "./dist/workbench/index.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "watch": "tsc -b --watch",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@synatic/noql": "^6.0.14",
+    "graphql": "^17.0.2",
+    "node-sql-parser": "^5.4.0",
+    "sql-formatter": "^15.8.2"
+  },
+  "peerDependencies": {
+    "@duckdb/duckdb-wasm": "^1.29.0"
+  },
+  "peerDependenciesMeta": {
+    "@duckdb/duckdb-wasm": { "optional": true }
+  },
+  "devDependencies": {
+    "@duckdb/duckdb-wasm": "^1.29.0",
+    "typescript": "^5.7.3"
+  }
+}
