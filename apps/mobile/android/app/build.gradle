@@ -1,5 +1,21 @@
 apply plugin: 'com.android.application'
 
+// Signing key, read from android/keystore.properties, which is not in git.
+//
+// Android refuses to install an unsigned APK, so a release build without this is
+// not something anyone can actually run. The file is kept out of the repo because
+// it holds the key password, and because whoever holds the key controls updates to
+// every existing install.
+//
+// When it is absent the release build still works and simply comes out unsigned —
+// useful in CI, and a clearer failure than a build that cannot run at all.
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+def hasSigningKey = keystorePropertiesFile.exists()
+if (hasSigningKey) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
     namespace "com.glitchbong.querystudio"
     compileSdk rootProject.ext.compileSdkVersion
@@ -8,7 +24,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
-        versionName "1.0"
+        versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +32,39 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (hasSigningKey) {
+            release {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
+    lint {
+        // lintVitalRelease resolves a `flatDir` repository that Capacitor declares
+        // for Cordova plugin jars. When that directory does not exist — and it does
+        // not, because there are no Cordova plugins here — Gradle fails the whole
+        // build with "The filename, directory name, or volume label syntax is
+        // incorrect", naming neither the path nor the task that wanted it.
+        //
+        // Lint has nothing useful to say about a WebView shell anyway: the app is
+        // one Activity and the real code is the web build.
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
     buildTypes {
         release {
+            if (hasSigningKey) {
+                signingConfig signingConfigs.release
+            }
+            // Left off deliberately. The app is a WebView around a web build that is
+            // already minified by Vite, so R8 has almost nothing to shrink here — and
+            // it strips the Capacitor plugin classes that are only reached by
+            // reflection unless every one of them is kept by name.
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

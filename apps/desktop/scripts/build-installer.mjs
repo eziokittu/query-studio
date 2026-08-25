@@ -36,6 +36,8 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { BINDINGS_DIR, fetchBinding } from "./fetch-bindings.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(here, "..");
 const repoRoot = join(appRoot, "..", "..");
@@ -77,14 +79,27 @@ function targetPlatform() {
   return process.platform;
 }
 
+/**
+ * Which arch this build is for.
+ *
+ * electron-builder packages one arch at a time when told to, and it has to be told
+ * to here: the native addon staged below is platform+arch specific, so a single
+ * staging cannot serve an arm64 and an x64 build at once. Passing `--arm64` or
+ * `--x64` on the command line picks both the binding and electron-builder's target.
+ */
+function targetArch(platform) {
+  if (args.includes("--arm64")) return "arm64";
+  if (args.includes("--x64")) return "x64";
+  // Windows is x64-only because DuckDB ships no win32-arm64 binding.
+  if (platform === "win32") return "x64";
+  return process.arch;
+}
+
 const platform = targetPlatform();
-// electron-builder is told the arch by the targets in package.json; every one of
-// them is x64 or arm64, and only x64 is buildable for Windows (see below).
-const arch = platform === "win32" ? "x64" : process.arch;
+const arch = targetArch(platform);
 const binding = bindingPackageFor(platform, arch);
 
 const staged = join(appRoot, "node_modules", "@duckdb");
-const sources = ["@duckdb/node-api", "@duckdb/node-bindings", binding];
 
 console.log(`[dist] Electron ${electronVersion}`);
 console.log(`[dist] Staging the native addon for ${platform}-${arch}`);
@@ -92,21 +107,48 @@ console.log(`[dist] Staging the native addon for ${platform}-${arch}`);
 rmSync(staged, { recursive: true, force: true });
 mkdirSync(staged, { recursive: true });
 
-for (const name of sources) {
+// The two platform-independent packages always come from the root install.
+for (const name of ["@duckdb/node-api", "@duckdb/node-bindings"]) {
   const from = join(repoRoot, "node_modules", ...name.split("/"));
   if (!existsSync(from)) {
-    console.error(`[dist] ${name} is not installed.`);
-    if (name === binding) {
-      console.error(
-        `[dist] DuckDB ships prebuilt bindings only, so a ${platform}-${arch} app has to be`,
-      );
-      console.error(`[dist] built on a ${platform} machine — or install ${name} explicitly first.`);
-    } else {
-      console.error("[dist] Run `npm install` at the repo root.");
-    }
+    console.error(`[dist] ${name} is not installed. Run \`npm install\` at the repo root.`);
     process.exit(1);
   }
   cpSync(from, join(staged, name.split("/")[1]), { recursive: true, dereference: true });
+}
+
+// The prebuilt binding is platform+arch specific. For the host platform npm has
+// already installed it; for any other it is downloaded into .bindings/ by
+// fetch-bindings.mjs, because npm refuses to install a package whose os/cpu does
+// not match the host and the --force workaround corrupts the rest of the tree.
+const bindingDirName = binding.split("/")[1];
+const hostCopy = join(repoRoot, "node_modules", ...binding.split("/"));
+const target = join(staged, bindingDirName);
+
+if (existsSync(hostCopy)) {
+  cpSync(hostCopy, target, { recursive: true, dereference: true });
+} else {
+  const cached = join(BINDINGS_DIR, `${platform}-${arch}`);
+  if (!existsSync(cached)) {
+    console.log(`[dist] ${binding} is not cached — fetching it.`);
+    try {
+      fetchBinding(`${platform}-${arch}`);
+    } catch (error) {
+      console.error(`[dist] Could not fetch ${binding}: ${error.message}`);
+      console.error("[dist] DuckDB ships prebuilt bindings only; there is no source fallback.");
+      process.exit(1);
+    }
+  }
+  // The unpacked tarball already carries the published package.json, with the
+  // right name, version and os/cpu fields. Nothing needs rewriting: the addon is
+  // loaded as `require("@duckdb/node-bindings-<target>/duckdb.node")`, an explicit
+  // file path, so the package's `main` never comes into it.
+  cpSync(cached, target, { recursive: true, dereference: true });
+}
+
+if (!existsSync(join(target, "duckdb.node"))) {
+  console.error(`[dist] ${binding} staged without a duckdb.node.`);
+  process.exit(1);
 }
 
 // ── build ────────────────────────────────────────────────────────────────────
@@ -117,8 +159,30 @@ for (const name of sources) {
 // `electronVersion` alone is enough — electron-builder downloads the right dist.
 const crossBuilding = platform !== process.platform;
 
+// electron-builder walks the *workspace root* for production dependencies, so it
+// finds every @duckdb/node-bindings-<platform> package npm installed there and packs
+// all of them. A Linux build was shipping the 34 MB Windows binding it can never
+// load. `files` is therefore rebuilt here with the staged binding included by name
+// and every other one excluded — it has to be dynamic, because which one is right
+// changes per build.
+const ALL_BINDINGS = [
+  "node-bindings-win32-x64",
+  "node-bindings-darwin-arm64",
+  "node-bindings-darwin-x64",
+  "node-bindings-linux-x64",
+  "node-bindings-linux-arm64",
+];
+
+const fileRules = [
+  "dist/**/*",
+  "!node_modules/**/*",
+  "node_modules/@duckdb/**/*",
+  ...ALL_BINDINGS.filter((b) => b !== bindingDirName).map((b) => `!node_modules/@duckdb/${b}/**`),
+];
+
 const flags = [
   ...args,
+  ...fileRules.map((rule) => `--config.files=${rule}`),
   `--config.electronVersion=${electronVersion}`,
   ...(crossBuilding ? [] : [`--config.electronDist=${electronDist}`]),
   // See note 2 above. Without this, electron-builder deletes its own binary.

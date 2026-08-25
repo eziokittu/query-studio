@@ -12,6 +12,7 @@
     "build:main": "esbuild electron/main.ts electron/preload.ts --bundle --platform=node --format=cjs --outdir=dist --out-extension:.js=.cjs --external:electron --external:@duckdb/node-api --target=node20",
     "build:values": "esbuild electron/values.ts --bundle --platform=node --format=esm --outfile=dist/values.mjs",
     "icons": "node scripts/make-icons.mjs",
+    "bindings": "node scripts/fetch-bindings.mjs",
     "dev": "npm run build:main && electron dist/main.cjs --dev",
     "prestart": "npm run build:main",
     "start": "electron dist/main.cjs",
@@ -20,8 +21,9 @@
     "test:packaged": "node test/packaged.mjs",
     "dist": "npm run build:main && npm run icons && node scripts/build-installer.mjs",
     "dist:win": "npm run build:main && npm run icons && node scripts/build-installer.mjs --win",
-    "dist:mac": "npm run build:main && npm run icons && node scripts/build-installer.mjs --mac",
-    "dist:linux": "npm run build:main && npm run icons && node scripts/build-installer.mjs --linux"
+    "dist:mac": "node scripts/package-mac.mjs arm64 && node scripts/package-mac.mjs x64",
+    "dist:linux": "node scripts/build-installer.mjs --linux dir --x64 && node scripts/package-linux.mjs x64 && node scripts/build-installer.mjs --linux dir --arm64 && node scripts/package-linux.mjs arm64",
+    "dist:all": "npm run dist:win && npm run dist:linux && npm run dist:mac"
   },
   "dependencies": {
     "@duckdb/node-api": "^1.4.0-alpha.0"
@@ -86,18 +88,18 @@
     "mac": {
       "target": [
         {
-          "target": "dmg",
+          "target": "zip",
           "arch": [
-            "x64",
-            "arm64"
+            "arm64",
+            "x64"
           ]
         }
       ],
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
-      "hardenedRuntime": true,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "hardenedRuntime": false,
+      "artifactName": "QueryStudio-${version}-${arch}-mac.${ext}",
+      "identity": null
     },
     "linux": {
       "target": [
@@ -106,18 +108,6 @@
           "arch": [
             "x64",
             "arm64"
-          ]
-        },
-        {
-          "target": "deb",
-          "arch": [
-            "x64"
-          ]
-        },
-        {
-          "target": "rpm",
-          "arch": [
-            "x64"
           ]
         }
       ],
@@ -130,7 +120,9 @@
           "Comment": "Query CSV, JSON, Parquet and log files with SQL",
           "Categories": "Development;Database;"
         }
-      }
+      },
+      "executableName": "query-studio",
+      "artifactName": "QueryStudio-${version}-${arch}.${ext}"
     },
     "fileAssociations": [
       {

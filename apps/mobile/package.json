@@ -13,6 +13,8 @@
     "run:android": "cap run android",
     "run:ios": "cap run ios",
     "build:android": "cap sync android && node scripts/gradle.mjs assembleRelease",
+    "package:android": "node scripts/package-android.mjs",
+    "dist:android": "npm run build:android && npm run package:android",
     "build:ios": "cap sync ios && cd ios/App && xcodebuild -workspace App.xcworkspace -scheme App -configuration Release"
   },
   "dependencies": {
